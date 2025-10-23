@@ -8,7 +8,7 @@ import bcrypt from 'bcryptjs';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import fs from 'fs';
 import path from 'path';
-import { getProfessorsFromFirestore, searchProfessorsInFirestore } from './firestore-integration.js';
+import { getProfessorsFromFirestore, searchProfessorsInFirestore, getStudentsFromFirestore } from './firestore-integration.js';
 
 // Load environment variables
 dotenv.config({ path: './production.env' });
@@ -275,7 +275,32 @@ Focus on research area alignment, university reputation, and potential collabora
     
     try {
       const matches = JSON.parse(jsonText);
-      return matches;
+      
+      // Map AI response back to actual Firebase document IDs
+      const mappedMatches = matches.map(aiMatch => {
+        // Find the actual professor in our database by name
+        const actualProf = professors.find(prof => 
+          prof.name === aiMatch.name || 
+          prof.name.includes(aiMatch.name) || 
+          aiMatch.name.includes(prof.name)
+        );
+        
+        if (actualProf) {
+          return {
+            ...aiMatch,
+            id: actualProf.id, // Use the actual Firebase document ID
+            name: actualProf.name, // Use the actual name from database
+            title: actualProf.title,
+            university: actualProf.university,
+            researchArea: actualProf.researchArea
+          };
+        }
+        
+        // If no match found, return the AI match as-is (fallback)
+        return aiMatch;
+      });
+      
+      return mappedMatches;
     } catch (parseError) {
       console.error('JSON parse error, using fallback matching:', parseError);
       // Fallback to simple keyword matching
@@ -338,6 +363,153 @@ Focus on research area alignment, university reputation, and potential collabora
   }
 }
 
+// Generate Gemini matches for students (when professors search for students)
+async function generateGeminiMatchesWithFirestoreStudents(query, students) {
+  try {
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+    
+    // Create context from Firestore students
+    const studentContext = students.map(student => ({
+      name: student.name,
+      university: student.university,
+      researchArea: student.researchArea,
+      bio: student.bio,
+      keywords: student.keywords,
+      degree: student.degree,
+      interests: student.interests
+    }));
+    
+    const prompt = `You are an AI academic matchmaker. Based on the professor's research interest query, find the most relevant students from the database.
+
+Professor Query: "${query}"
+
+Available Students:
+${JSON.stringify(studentContext, null, 2)}
+
+Return exactly 3 best matches as a JSON array with this structure:
+[
+  {
+    "id": "student_id",
+    "name": "Student Name",
+    "university": "University Name",
+    "researchArea": "Research Area",
+    "justification": "Why this student is a good match for the professor's research interests",
+    "similarityScore": 0.95
+  }
+]
+
+Focus on research area alignment, university reputation, and potential collaboration opportunities.`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+    
+    // Clean up the response (remove markdown formatting if present)
+    let cleanText = text;
+    if (cleanText.includes('```json')) {
+      cleanText = cleanText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+    }
+    if (cleanText.includes('```')) {
+      cleanText = cleanText.replace(/```\n?/g, '');
+    }
+    
+    // Try to extract JSON from the response
+    let jsonText = cleanText.trim();
+    
+    // Look for JSON array in the response
+    const jsonMatch = jsonText.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      jsonText = jsonMatch[0];
+    }
+    
+    try {
+      const matches = JSON.parse(jsonText);
+      
+      // Map AI response back to actual Firebase document IDs
+      const mappedMatches = matches.map(aiMatch => {
+        // Find the actual student in our database by name
+        const actualStudent = students.find(student => 
+          student.name === aiMatch.name || 
+          student.name.includes(aiMatch.name) || 
+          aiMatch.name.includes(student.name)
+        );
+        
+        if (actualStudent) {
+          return {
+            ...aiMatch,
+            id: actualStudent.id, // Use the actual Firebase document ID
+            name: actualStudent.name, // Use the actual name from database
+            university: actualStudent.university,
+            researchArea: actualStudent.researchArea
+          };
+        }
+        
+        // If no match found, return the AI match as-is (fallback)
+        return aiMatch;
+      });
+      
+      return mappedMatches;
+    } catch (parseError) {
+      console.error('JSON parse error, using fallback matching:', parseError);
+      // Fallback to simple keyword matching
+      const queryLower = query.toLowerCase();
+      const fallbackMatches = students
+        .filter(student => {
+          const searchText = [
+            student.name,
+            student.researchArea,
+            student.university,
+            student.bio,
+            ...(student.keywords || []),
+            ...(student.interests || [])
+          ].join(' ').toLowerCase();
+          return searchText.includes(queryLower);
+        })
+        .slice(0, 3)
+        .map(student => ({
+          id: student.id,
+          name: student.name,
+          university: student.university,
+          researchArea: student.researchArea,
+          justification: `Matches your interest in ${query} based on research area and expertise.`,
+          similarityScore: 0.8
+        }));
+      
+      return fallbackMatches;
+    }
+    
+  } catch (error) {
+    console.error('Error in Gemini response generation:', error);
+    
+    // Fallback to simple keyword matching
+    const queryLower = query.toLowerCase();
+    const fallbackMatches = students
+      .filter(student => {
+        const searchText = [
+          student.name,
+          student.researchArea,
+          student.university,
+          student.bio,
+          ...(student.keywords || []),
+          ...(student.interests || [])
+        ].join(' ').toLowerCase();
+        return searchText.includes(queryLower);
+      })
+      .slice(0, 3)
+      .map(student => ({
+        id: student.id,
+        name: student.name,
+        university: student.university,
+        researchArea: student.researchArea,
+        justification: `Matches your interest in ${query} based on research area and expertise.`,
+        similarityScore: 0.8
+      }));
+    
+    return fallbackMatches;
+  }
+}
+
 // Production smart matching endpoint (with Firestore)
 app.post('/smart-match', authenticateToken, async (req, res) => {
   try {
@@ -370,6 +542,43 @@ app.post('/smart-match', authenticateToken, async (req, res) => {
     console.error('❌ Error in production smart matching:', error);
     res.status(500).json({ 
       error: 'Internal server error during smart matching',
+      details: error.message 
+    });
+  }
+});
+
+// Smart matching endpoint for students (when professors search for students)
+app.post('/smart-match-students', authenticateToken, async (req, res) => {
+  try {
+    const { query } = req.body;
+    
+    if (!query || query.trim().length < 3) {
+      return res.status(400).json({ 
+        error: 'Query must be at least 3 characters long' 
+      });
+    }
+    
+    console.log(`🔍 Processing student search query: "${query}"`);
+    
+    // Get students from Firestore
+    const students = await getStudentsFromFirestore();
+    
+    if (students.length === 0) {
+      console.log('⚠️ No students found in Firestore');
+      return res.json([]);
+    }
+    
+    // Generate smart matches using Gemini with Firestore data
+    const matches = await generateGeminiMatchesWithFirestoreStudents(query, students);
+    
+    console.log(`✅ Generated ${matches.length} smart student matches with Gemini and Firestore`);
+    
+    res.json(matches);
+    
+  } catch (error) {
+    console.error('❌ Error in student smart matching:', error);
+    res.status(500).json({ 
+      error: 'Internal server error during student matching',
       details: error.message 
     });
   }

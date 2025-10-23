@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, collection, query, onSnapshot, addDoc, serverTimestamp, where, arrayUnion } from 'firebase/firestore';
-import { User, GraduationCap, Globe, BookOpen, Send, Loader2, LogOut, CheckCheck, MessageSquare, Heart, Edit2, Clock, Search, Zap, XCircle } from 'lucide-react';
+import { getFirestore, doc, setDoc, getDoc, collection, query, onSnapshot, addDoc, serverTimestamp, where, arrayUnion, getDocs, orderBy, limit } from 'firebase/firestore';
+import { User, GraduationCap, Globe, BookOpen, Send, Loader2, LogOut, CheckCheck, MessageSquare, Heart, Edit2, Clock, Search, Zap, XCircle, Bell, BellRing, Paperclip, Image, File } from 'lucide-react';
 
 // --- Import Firebase Configuration ---
 import { firebaseConfig, appId } from './firebase-config.js';
@@ -519,6 +519,21 @@ const ChatWindow = ({ db, currentUserId, partner, onEndChat }) => {
         text: newMessage,
         timestamp: serverTimestamp(),
       });
+      
+      // Send notification to professor if student is messaging
+      if (currentUserId !== partner.userId) {
+        const notificationsCollection = collection(db, `artifacts/${appId}/public/data/notifications`);
+        await addDoc(notificationsCollection, {
+          professorId: partner.userId,
+          studentId: currentUserId,
+          studentName: 'Student', // This should be fetched from user profile
+          message: `New message: ${newMessage.substring(0, 50)}...`,
+          read: false,
+          timestamp: serverTimestamp(),
+          chatId: chatId
+        });
+      }
+      
       setNewMessage('');
     } catch (error) {
       console.error("Error sending message:", error);
@@ -591,8 +606,339 @@ const ChatWindow = ({ db, currentUserId, partner, onEndChat }) => {
 };
 
 
+// --- Chat Interface Component ---
+const ChatInterface = ({ db, userId, userName, userType }) => {
+  const [chats, setChats] = useState([]);
+  const [activeChat, setActiveChat] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [isUploading, setIsUploading] = useState(false);
+
+  // Load user's chats
+  useEffect(() => {
+    if (!db || !userId) return;
+
+    console.log('🔍 Loading chats for user ID:', userId);
+    const chatsCollection = collection(db, `artifacts/${appId}/public/data/chats`);
+    const userChatsQuery = query(
+      chatsCollection,
+      where('participants', 'array-contains', userId)
+    );
+
+    const unsubscribe = onSnapshot(userChatsQuery, (snapshot) => {
+      const userChats = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      console.log('🔍 Loaded chats for user:', userId, userChats);
+      setChats(userChats);
+    }, (error) => {
+      console.error('❌ Error loading chats:', error);
+    });
+
+    return () => unsubscribe();
+  }, [db, userId]);
+
+  // Load messages for active chat
+  useEffect(() => {
+    if (!db || !activeChat) {
+      setMessages([]);
+      return;
+    }
+
+    console.log('🔍 Loading messages for chat:', activeChat.id);
+    const messagesCollection = collection(db, `artifacts/${appId}/public/data/chats/${activeChat.id}/messages`);
+    const messagesQuery = query(messagesCollection, orderBy('timestamp', 'asc'));
+
+    const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
+      const chatMessages = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      console.log('🔍 Loaded messages for chat:', activeChat.id, chatMessages);
+      console.log('🔍 Setting messages state with:', chatMessages.length, 'messages');
+      console.log('🔍 Message details:', chatMessages.map(msg => ({
+        id: msg.id,
+        senderId: msg.senderId,
+        senderName: msg.senderName,
+        content: msg.content,
+        timestamp: msg.timestamp
+      })));
+      console.log('🔍 Current user ID:', userId);
+      console.log('🔍 Chat participants:', activeChat.participants);
+      setMessages(chatMessages);
+    }, (error) => {
+      console.error('❌ Error loading messages:', error);
+    });
+
+    return () => unsubscribe();
+  }, [db, activeChat]);
+
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (!newMessage.trim() && selectedFiles.length === 0) return;
+
+    try {
+      // Ensure content is not undefined or empty
+      const messageContent = newMessage.trim() || '';
+      if (!messageContent && selectedFiles.length === 0) {
+        console.log('⚠️ Cannot send empty message');
+        return;
+      }
+
+      const messageData = {
+        senderId: userId,
+        senderName: userName,
+        content: messageContent,
+        timestamp: serverTimestamp(),
+        type: 'text',
+        files: selectedFiles
+      };
+
+      if (activeChat) {
+        console.log('🔍 Sending message to chat:', activeChat.id);
+        console.log('🔍 Message data being sent:', messageData);
+        console.log('🔍 Current user ID:', userId);
+        console.log('🔍 Chat participants:', activeChat.participants);
+        // Add message to existing chat
+        const messagesCollection = collection(db, `artifacts/${appId}/public/data/chats/${activeChat.id}/messages`);
+        const docRef = await addDoc(messagesCollection, messageData);
+        console.log('✅ Message sent to chat:', activeChat.id, 'Message ID:', docRef.id);
+        
+        // Update chat with last message
+        const chatRef = doc(db, `artifacts/${appId}/public/data/chats/${activeChat.id}`);
+        await setDoc(chatRef, {
+          lastMessage: newMessage,
+          lastMessageTime: serverTimestamp(),
+          lastMessageSender: userName
+        }, { merge: true });
+        console.log('✅ Chat updated with last message');
+      } else {
+        console.log('❌ No active chat selected');
+      }
+
+      setNewMessage('');
+      setSelectedFiles([]);
+    } catch (error) {
+      console.error('❌ Error sending message:', error);
+      if (error.code === 'permission-denied') {
+        console.error('🔒 Permission denied: Check Firestore security rules');
+      } else if (error.code === 'unavailable') {
+        console.error('🌐 Network error: Check internet connection');
+      }
+    }
+  };
+
+  const handleFileSelect = (e) => {
+    const files = Array.from(e.target.files);
+    setSelectedFiles(prev => [...prev, ...files]);
+  };
+
+  const removeFile = (index) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  return (
+    <div className="max-w-6xl mx-auto">
+      <div className="bg-white rounded-lg shadow-lg overflow-hidden">
+        <div className="flex h-[600px]">
+          {/* Chat List Sidebar */}
+          <div className="w-1/3 border-r border-gray-200 bg-gray-50">
+            <div className="p-4 border-b border-gray-200">
+              <h3 className="text-lg font-semibold text-gray-900">My Chats</h3>
+            </div>
+            <div className="overflow-y-auto">
+              {chats.length === 0 ? (
+                <div className="p-4 text-center text-gray-500">
+                  <MessageSquare className="w-12 h-12 mx-auto mb-2 text-gray-300" />
+                  <p>No chats yet</p>
+                  <p className="text-sm">Start a conversation from the matchmaker!</p>
+                </div>
+              ) : (
+                chats.map(chat => (
+                  <div
+                    key={chat.id}
+                    onClick={() => {
+                      console.log('🔍 Chat selected:', chat.id, chat);
+                      setActiveChat(chat);
+                    }}
+                    className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-100 ${
+                      activeChat?.id === chat.id ? 'bg-indigo-50 border-indigo-200' : ''
+                    }`}
+                  >
+                    <div className="flex items-center">
+                      <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center">
+                        <User className="w-5 h-5 text-indigo-600" />
+                      </div>
+                      <div className="ml-3 flex-1">
+                        <h4 className="font-medium text-gray-900">
+                          {chat.participants?.find(p => p !== userId) || 'Unknown User'}
+                        </h4>
+                        <p className="text-sm text-gray-500 truncate">
+                          {chat.lastMessage || 'No messages yet'}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* Chat Messages Area */}
+          <div className="flex-1 flex flex-col">
+            {activeChat ? (
+              <>
+                {/* Chat Header */}
+                <div className="p-4 border-b border-gray-200 bg-white">
+                  <div className="flex items-center">
+                    <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center">
+                      <User className="w-5 h-5 text-indigo-600" />
+                    </div>
+                    <div className="ml-3">
+                      <h4 className="font-medium text-gray-900">
+                        {activeChat.participants?.find(p => p !== userId) || 'Unknown User'}
+                      </h4>
+                      <p className="text-sm text-gray-500">Online</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Messages Area */}
+                <div className="flex-1 p-4 overflow-y-auto bg-gray-50">
+                  <div className="space-y-4">
+                    {console.log('🔍 Current messages state:', messages.length, messages)}
+                    {messages.length === 0 ? (
+                      <div className="text-center text-gray-500 py-8">
+                        <MessageSquare className="w-12 h-12 mx-auto mb-2 text-gray-300" />
+                        <p>No messages yet</p>
+                        <p className="text-sm">Start the conversation!</p>
+                      </div>
+                    ) : (
+                      <div>
+                        <p className="text-sm text-gray-500 mb-2">Debug: {messages.length} messages loaded</p>
+                        {messages.map((message) => {
+                        const isCurrentUser = message.senderId === userId;
+                        console.log('🔍 Rendering message:', {
+                          id: message.id,
+                          senderId: message.senderId,
+                          currentUserId: userId,
+                          isCurrentUser,
+                          content: message.content
+                        });
+                        
+                        return (
+                          <div
+                            key={message.id}
+                            className={`flex ${isCurrentUser ? 'justify-end' : 'justify-start'}`}
+                          >
+                            <div className={`p-3 rounded-lg max-w-xs ${
+                              isCurrentUser 
+                                ? 'bg-indigo-500 text-white' 
+                                : 'bg-white shadow-sm'
+                            }`}>
+                              <p>{message.content}</p>
+                              <p className={`text-xs mt-1 ${
+                                isCurrentUser 
+                                  ? 'text-indigo-200' 
+                                  : 'text-gray-500'
+                              }`}>
+                                {message.timestamp?.toDate ? 
+                                  message.timestamp.toDate().toLocaleTimeString() : 
+                                  'Just now'
+                                }
+                              </p>
+                              {message.files && message.files.length > 0 && (
+                                <div className="mt-2 space-y-1">
+                                  {message.files.map((file, index) => (
+                                    <div key={index} className="flex items-center text-xs">
+                                      <File className="w-3 h-3 mr-1" />
+                                      <span>{file.name}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Message Input */}
+                <div className="p-4 border-t border-gray-200 bg-white">
+                  {/* Selected Files Preview */}
+                  {selectedFiles.length > 0 && (
+                    <div className="mb-3 flex flex-wrap gap-2">
+                      {selectedFiles.map((file, index) => (
+                        <div key={index} className="flex items-center bg-gray-100 rounded-lg px-3 py-1">
+                          <File className="w-4 h-4 text-gray-500 mr-2" />
+                          <span className="text-sm text-gray-700">{file.name}</span>
+                          <button
+                            onClick={() => removeFile(index)}
+                            className="ml-2 text-gray-500 hover:text-red-500"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <form onSubmit={handleSendMessage} className="flex items-center space-x-2">
+                    <div className="flex-1 flex items-center space-x-2">
+                      <input
+                        type="text"
+                        value={newMessage}
+                        onChange={(e) => setNewMessage(e.target.value)}
+                        placeholder="Type your message..."
+                        className="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                      />
+                      
+                      {/* File Upload Button */}
+                      <label className="p-3 bg-gray-100 hover:bg-gray-200 rounded-lg cursor-pointer transition-colors">
+                        <Paperclip className="w-5 h-5 text-gray-600" />
+                        <input
+                          type="file"
+                          multiple
+                          onChange={handleFileSelect}
+                          className="hidden"
+                          accept="image/*,.pdf,.doc,.docx,.txt"
+                        />
+                      </label>
+                    </div>
+                    
+                    <button
+                      type="submit"
+                      disabled={!newMessage.trim() && selectedFiles.length === 0}
+                      className="p-3 bg-indigo-500 hover:bg-indigo-600 disabled:bg-gray-300 text-white rounded-lg transition-colors"
+                    >
+                      <Send className="w-5 h-5" />
+                    </button>
+                  </form>
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex items-center justify-center bg-gray-50">
+                <div className="text-center">
+                  <MessageSquare className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+                  <h3 className="text-lg font-medium text-gray-900 mb-2">No chat selected</h3>
+                  <p className="text-gray-500">Choose a chat from the sidebar to start messaging</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- Matchmaker Component ---
-const Matchmaker = ({ db, userId, userName }) => {
+const Matchmaker = ({ db, userId, userName, userType }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -645,7 +991,10 @@ const Matchmaker = ({ db, userId, userName }) => {
         throw new Error('Unable to authenticate with backend. Please try again.');
       }
       
-      const response = await fetch('http://localhost:3003/smart-match', {
+      // Use different endpoints based on user type
+      const endpoint = userType === 'professor' ? 'smart-match-students' : 'smart-match';
+      
+      const response = await fetch(`http://localhost:3003/${endpoint}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -702,14 +1051,20 @@ const Matchmaker = ({ db, userId, userName }) => {
           <Zap className="w-6 h-6 mr-2" /> Academic Matchmaker
         </h3>
         <p className="text-gray-600 mb-4">
-            Find collaborators using AI-powered smart matching. Describe your research interests naturally (e.g., "I'm interested in quantum machine learning applications" or "I work on CRISPR gene editing for cancer therapy").
+            {userType === 'professor' 
+              ? 'Find students using AI-powered smart matching. Describe what kind of students you\'re looking for (e.g., "students interested in machine learning research" or "undergraduates for data science projects").'
+              : 'Find professors using AI-powered smart matching. Describe your research interests naturally (e.g., "I\'m interested in quantum machine learning applications" or "I work on CRISPR gene editing for cancer therapy").'
+            }
         </p>
         <form onSubmit={handleSearch} className="flex space-x-2">
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Describe your research interests (e.g., 'quantum machine learning for drug discovery')..."
+            placeholder={userType === 'professor' 
+              ? "Describe what students you're looking for (e.g., 'students interested in machine learning research')..."
+              : "Describe your research interests (e.g., 'quantum machine learning for drug discovery')..."
+            }
             className="flex-1 rounded-lg border border-gray-300 p-3 focus:border-indigo-500 focus:ring-indigo-500 transition duration-150"
             disabled={isSearching}
           />
@@ -758,7 +1113,93 @@ const Matchmaker = ({ db, userId, userName }) => {
             
             <div className="flex justify-end pt-3 border-t">
               <button
-                onClick={() => setActiveChat({ userId: match.id, name: match.name })}
+                onClick={async () => {
+                  try {
+                    console.log('🔍 Starting conversation between:', userId, 'and', match.id);
+                    console.log('🔍 User names:', userName, 'and', match.name);
+                    
+                    // Check if chat already exists between these users
+                    const existingChatsQuery = query(
+                      collection(db, `artifacts/${appId}/public/data/chats`),
+                      where('participants', 'array-contains', userId)
+                    );
+                    
+                    const existingChatsSnapshot = await getDocs(existingChatsQuery);
+                    let existingChat = null;
+                    
+                    console.log('🔍 Found existing chats:', existingChatsSnapshot.docs.length);
+                    existingChatsSnapshot.forEach(doc => {
+                      const chatData = doc.data();
+                      console.log('🔍 Checking chat:', doc.id, 'participants:', chatData.participants);
+                      if (chatData.participants.includes(match.id)) {
+                        existingChat = { id: doc.id, ...chatData };
+                        console.log('✅ Found existing chat:', existingChat);
+                      }
+                    });
+
+                    let chatId;
+                    
+                    if (existingChat) {
+                      // Use existing chat
+                      chatId = existingChat.id;
+                    } else {
+                    // Create a new chat document
+                    const chatData = {
+                      participants: [userId, match.id],
+                      participantNames: [userName, match.name],
+                      lastMessage: '',
+                      lastMessageTime: serverTimestamp(),
+                      created: serverTimestamp()
+                    };
+
+                    console.log('🔍 Creating new chat with data:', chatData);
+                    const chatRef = await addDoc(collection(db, `artifacts/${appId}/public/data/chats`), chatData);
+                    chatId = chatRef.id;
+                    console.log('✅ Chat created with ID:', chatId);
+                    }
+                    
+                    // Create initial message
+                    const messageData = {
+                      senderId: userId,
+                      senderName: userName,
+                      content: `Hello ${match.name}! I'm interested in your research.`,
+                      timestamp: serverTimestamp(),
+                      type: 'text'
+                    };
+
+                    console.log('🔍 Creating message with data:', messageData);
+                    await addDoc(collection(db, `artifacts/${appId}/public/data/chats/${chatId}/messages`), messageData);
+                    console.log('✅ Message created successfully');
+
+                    // Update chat with last message
+                    await setDoc(doc(db, `artifacts/${appId}/public/data/chats/${chatId}`), {
+                      lastMessage: messageData.content,
+                      lastMessageTime: serverTimestamp(),
+                      lastMessageSender: userName
+                    }, { merge: true });
+
+                    // Create notification for the matched user
+                    const notificationData = {
+                      professorId: match.id,
+                      studentId: userId,
+                      studentName: userName,
+                      message: `Hello ${match.name}! I'm interested in your research.`,
+                      timestamp: serverTimestamp(),
+                      read: false,
+                      type: 'message'
+                    };
+
+                    console.log('🔍 Creating notification:', notificationData);
+                    await addDoc(collection(db, `artifacts/${appId}/public/data/notifications`), notificationData);
+                    console.log('✅ Notification created successfully');
+
+                    setActiveChat({ id: chatId, participants: [userId, match.id], participantNames: [userName, match.name] });
+                    setError('');
+                  } catch (error) {
+                    console.error('Error starting conversation:', error);
+                    setError('Error starting conversation. Please try again.');
+                  }
+                }}
                 className="flex items-center px-4 py-2 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 transition duration-150 shadow-md transform hover:scale-[1.05]"
               >
                 <MessageSquare className="w-5 h-5 mr-2" /> Start Conversation
@@ -1251,6 +1692,8 @@ const App = () => {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [userType, setUserType] = useState(''); // 'student' or 'professor'
   const [onboardingStep, setOnboardingStep] = useState(0);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   // Profile Data
   const [profileData, setProfileData] = useState({
@@ -1367,6 +1810,26 @@ const App = () => {
       fetchProfile(userId);
     }
   }, [isAuthReady, userId, fetchProfile]);
+
+  // Listen for notifications (for professors)
+  useEffect(() => {
+    if (!db || !userId || userType !== 'professor') return;
+
+    const notificationsCollection = collection(db, `artifacts/${appId}/public/data/notifications`);
+    const notificationsQuery = query(notificationsCollection, where('professorId', '==', userId));
+    
+    const unsubscribe = onSnapshot(notificationsQuery, (snapshot) => {
+      const fetchedNotifications = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      
+      setNotifications(fetchedNotifications);
+      setUnreadCount(fetchedNotifications.filter(n => !n.read).length);
+    });
+
+    return () => unsubscribe();
+  }, [db, userId, userType]);
 
   // --- HANDLERS ---
 
@@ -1941,7 +2404,7 @@ const App = () => {
             <p className="text-indigo-100">
               {profileData.userType === 'student' 
                 ? 'Ready to find your next research opportunity?' 
-                : 'Ready to connect with talented researchers?'}
+                : 'Ready to connect with talented researchers and students?'}
             </p>
           </div>
           <div className="text-right">
@@ -1951,109 +2414,262 @@ const App = () => {
         </div>
       </div>
 
-      {/* Quick Stats */}
+      {/* Quick Stats - Different for Students vs Professors */}
       <div className="grid md:grid-cols-4 gap-4">
-        <div className="bg-white p-4 rounded-lg shadow">
-          <div className="flex items-center">
-            <div className="p-2 bg-blue-100 rounded-lg">
-              <Search className="w-6 h-6 text-blue-600" />
+        {profileData.userType === 'student' ? (
+          // Student Stats
+          <>
+            <div className="bg-white p-4 rounded-lg shadow">
+              <div className="flex items-center">
+                <div className="p-2 bg-blue-100 rounded-lg">
+                  <Search className="w-6 h-6 text-blue-600" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm font-medium text-gray-500">Available Professors</p>
+                  <p className="text-lg font-semibold text-gray-900">6</p>
+                </div>
+              </div>
             </div>
-            <div className="ml-3">
-              <p className="text-sm font-medium text-gray-500">Smart Matches</p>
-              <p className="text-lg font-semibold text-gray-900">12</p>
+            
+            <div className="bg-white p-4 rounded-lg shadow">
+              <div className="flex items-center">
+                <div className="p-2 bg-green-100 rounded-lg">
+                  <MessageSquare className="w-6 h-6 text-green-600" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm font-medium text-gray-500">Active Conversations</p>
+                  <p className="text-lg font-semibold text-gray-900">0</p>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-        
-        <div className="bg-white p-4 rounded-lg shadow">
-          <div className="flex items-center">
-            <div className="p-2 bg-green-100 rounded-lg">
-              <MessageSquare className="w-6 h-6 text-green-600" />
+            
+            <div className="bg-white p-4 rounded-lg shadow">
+              <div className="flex items-center">
+                <div className="p-2 bg-purple-100 rounded-lg">
+                  <User className="w-6 h-6 text-purple-600" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm font-medium text-gray-500">Potential Mentors</p>
+                  <p className="text-lg font-semibold text-gray-900">6</p>
+                </div>
+              </div>
             </div>
-            <div className="ml-3">
-              <p className="text-sm font-medium text-gray-500">Active Chats</p>
-              <p className="text-lg font-semibold text-gray-900">5</p>
+            
+            <div className="bg-white p-4 rounded-lg shadow">
+              <div className="flex items-center">
+                <div className="p-2 bg-orange-100 rounded-lg">
+                  <BookOpen className="w-6 h-6 text-orange-600" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm font-medium text-gray-500">Research Areas</p>
+                  <p className="text-lg font-semibold text-gray-900">{profileData.researchArea ? '1' : '0'}</p>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-        
-        <div className="bg-white p-4 rounded-lg shadow">
-          <div className="flex items-center">
-            <div className="p-2 bg-purple-100 rounded-lg">
-              <Globe className="w-6 h-6 text-purple-600" />
+          </>
+        ) : (
+          // Professor Stats
+          <>
+            <div className="bg-white p-4 rounded-lg shadow">
+              <div className="flex items-center">
+                <div className="p-2 bg-blue-100 rounded-lg">
+                  <User className="w-6 h-6 text-blue-600" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm font-medium text-gray-500">Potential Students</p>
+                  <p className="text-lg font-semibold text-gray-900">1</p>
+                </div>
+              </div>
             </div>
-            <div className="ml-3">
-              <p className="text-sm font-medium text-gray-500">Connections</p>
-              <p className="text-lg font-semibold text-gray-900">23</p>
+            
+            <div className="bg-white p-4 rounded-lg shadow">
+              <div className="flex items-center">
+                <div className="p-2 bg-green-100 rounded-lg">
+                  <BellRing className="w-6 h-6 text-green-600" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm font-medium text-gray-500">New Messages</p>
+                  <p className="text-lg font-semibold text-gray-900">{unreadCount}</p>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-        
-        <div className="bg-white p-4 rounded-lg shadow">
-          <div className="flex items-center">
-            <div className="p-2 bg-orange-100 rounded-lg">
-              <BookOpen className="w-6 h-6 text-orange-600" />
+            
+            <div className="bg-white p-4 rounded-lg shadow">
+              <div className="flex items-center">
+                <div className="p-2 bg-purple-100 rounded-lg">
+                  <Globe className="w-6 h-6 text-purple-600" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm font-medium text-gray-500">Research Collaborations</p>
+                  <p className="text-lg font-semibold text-gray-900">0</p>
+                </div>
+              </div>
             </div>
-            <div className="ml-3">
-              <p className="text-sm font-medium text-gray-500">Research Areas</p>
-              <p className="text-lg font-semibold text-gray-900">{profileData.researchArea ? '1' : '0'}</p>
+            
+            <div className="bg-white p-4 rounded-lg shadow">
+              <div className="flex items-center">
+                <div className="p-2 bg-orange-100 rounded-lg">
+                  <BookOpen className="w-6 h-6 text-orange-600" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm font-medium text-gray-500">Research Areas</p>
+                  <p className="text-lg font-semibold text-gray-900">{profileData.researchArea ? '1' : '0'}</p>
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
+          </>
+        )}
       </div>
 
-      {/* Recent Activity */}
+      {/* Recent Activity - Different for Students vs Professors */}
       <div className="grid md:grid-cols-2 gap-6">
-        <div className="bg-white p-6 rounded-lg shadow">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Recent Matches</h3>
-          <div className="space-y-3">
-            <div className="flex items-center p-3 bg-gray-50 rounded-lg">
-              <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center">
-                <User className="w-5 h-5 text-indigo-600" />
-              </div>
-              <div className="ml-3">
-                <p className="font-medium text-gray-900">Dr. Sarah Chen</p>
-                <p className="text-sm text-gray-500">Stanford University • 95% match</p>
+        {profileData.userType === 'student' ? (
+          // Student Dashboard
+          <>
+            <div className="bg-white p-6 rounded-lg shadow">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Available Professors</h3>
+              <div className="space-y-3">
+                <div className="flex items-center p-3 bg-gray-50 rounded-lg">
+                  <div className="w-10 h-10 bg-indigo-100 rounded-full flex items-center justify-center">
+                    <User className="w-5 h-5 text-indigo-600" />
+                  </div>
+                  <div className="ml-3">
+                    <p className="font-medium text-gray-900">Dr. Obaid Ur Rehman</p>
+                    <p className="text-sm text-gray-500">Air University • Machine Learning</p>
+                  </div>
+                </div>
+                <div className="flex items-center p-3 bg-gray-50 rounded-lg">
+                  <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+                    <User className="w-5 h-5 text-green-600" />
+                  </div>
+                  <div className="ml-3">
+                    <p className="font-medium text-gray-900">Dr. Deesha</p>
+                    <p className="text-sm text-gray-500">NUST • AI, OCR</p>
+                  </div>
+                </div>
+                <div className="flex items-center p-3 bg-gray-50 rounded-lg">
+                  <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
+                    <User className="w-5 h-5 text-purple-600" />
+                  </div>
+                  <div className="ml-3">
+                    <p className="font-medium text-gray-900">Dr. Ammie</p>
+                    <p className="text-sm text-gray-500">CUST • Data Science</p>
+                  </div>
+                </div>
               </div>
             </div>
-            <div className="flex items-center p-3 bg-gray-50 rounded-lg">
-              <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
-                <User className="w-5 h-5 text-green-600" />
-              </div>
-              <div className="ml-3">
-                <p className="font-medium text-gray-900">Dr. Michael Rodriguez</p>
-                <p className="text-sm text-gray-500">MIT • 87% match</p>
-              </div>
-            </div>
-          </div>
-        </div>
 
-        <div className="bg-white p-6 rounded-lg shadow">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
-          <div className="space-y-3">
-            <button
-              onClick={() => setActiveTab('matchmaker')}
-              className="w-full flex items-center p-3 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors"
-            >
-              <Search className="w-5 h-5 text-indigo-600 mr-3" />
-              <span className="font-medium text-indigo-900">Find Collaborators</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('profile')}
-              className="w-full flex items-center p-3 bg-green-50 rounded-lg hover:bg-green-100 transition-colors"
-            >
-              <User className="w-5 h-5 text-green-600 mr-3" />
-              <span className="font-medium text-green-900">Update Profile</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('feed')}
-              className="w-full flex items-center p-3 bg-purple-50 rounded-lg hover:bg-purple-100 transition-colors"
-            >
-              <Globe className="w-5 h-5 text-purple-600 mr-3" />
-              <span className="font-medium text-purple-900">Browse Feed</span>
-            </button>
-          </div>
-        </div>
+            <div className="bg-white p-6 rounded-lg shadow">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
+              <div className="space-y-3">
+                <button
+                  onClick={() => setActiveTab('matchmaker')}
+                  className="w-full flex items-center p-3 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors"
+                >
+                  <Search className="w-5 h-5 text-indigo-600 mr-3" />
+                  <span className="font-medium text-indigo-900">Find Professors</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('profile')}
+                  className="w-full flex items-center p-3 bg-green-50 rounded-lg hover:bg-green-100 transition-colors"
+                >
+                  <User className="w-5 h-5 text-green-600 mr-3" />
+                  <span className="font-medium text-green-900">Update Profile</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('feed')}
+                  className="w-full flex items-center p-3 bg-purple-50 rounded-lg hover:bg-purple-100 transition-colors"
+                >
+                  <Globe className="w-5 h-5 text-purple-600 mr-3" />
+                  <span className="font-medium text-purple-900">Browse Feed</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('chats')}
+                  className="w-full flex items-center p-3 bg-orange-50 rounded-lg hover:bg-orange-100 transition-colors"
+                >
+                  <MessageSquare className="w-5 h-5 text-orange-600 mr-3" />
+                  <span className="font-medium text-orange-900">My Chats</span>
+                </button>
+              </div>
+            </div>
+          </>
+        ) : (
+          // Professor Dashboard
+          <>
+            <div className="bg-white p-6 rounded-lg shadow">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                <BellRing className="w-5 h-5 mr-2 text-green-600" />
+                Recent Messages
+                {unreadCount > 0 && (
+                  <span className="ml-2 bg-red-500 text-white text-xs px-2 py-1 rounded-full">{unreadCount}</span>
+                )}
+              </h3>
+              <div className="space-y-3">
+                {notifications.length > 0 ? (
+                  notifications.slice(0, 3).map((notification, index) => (
+                    <div key={notification.id} className={`flex items-center p-3 rounded-lg ${!notification.read ? 'bg-blue-50 border-l-4 border-blue-400' : 'bg-gray-50'}`}>
+                      <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+                        <User className="w-5 h-5 text-blue-600" />
+                      </div>
+                      <div className="ml-3 flex-1">
+                        <p className="font-medium text-gray-900">{notification.studentName || 'Student'}</p>
+                        <p className="text-sm text-gray-500">{notification.message || 'Sent you a message'}</p>
+                        <p className="text-xs text-gray-400">{formatTimestamp(notification.timestamp)}</p>
+                      </div>
+                      {!notification.read && (
+                        <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <div className="flex items-center p-3 bg-gray-50 rounded-lg">
+                    <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+                      <User className="w-5 h-5 text-blue-600" />
+                    </div>
+                    <div className="ml-3 flex-1">
+                      <p className="font-medium text-gray-900">No new messages</p>
+                      <p className="text-sm text-gray-500">Students will appear here when they message you</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-lg shadow">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">Professor Actions</h3>
+              <div className="space-y-3">
+                <button
+                  onClick={() => setActiveTab('matchmaker')}
+                  className="w-full flex items-center p-3 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors"
+                >
+                  <Search className="w-5 h-5 text-indigo-600 mr-3" />
+                  <span className="font-medium text-indigo-900">Find Students</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('profile')}
+                  className="w-full flex items-center p-3 bg-green-50 rounded-lg hover:bg-green-100 transition-colors"
+                >
+                  <User className="w-5 h-5 text-green-600 mr-3" />
+                  <span className="font-medium text-green-900">Update Profile</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('feed')}
+                  className="w-full flex items-center p-3 bg-purple-50 rounded-lg hover:bg-purple-100 transition-colors"
+                >
+                  <Globe className="w-5 h-5 text-purple-600 mr-3" />
+                  <span className="font-medium text-purple-900">Browse Feed</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('chats')}
+                  className="w-full flex items-center p-3 bg-orange-50 rounded-lg hover:bg-orange-100 transition-colors"
+                >
+                  <MessageSquare className="w-5 h-5 text-orange-600 mr-3" />
+                  <span className="font-medium text-orange-900">My Chats</span>
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -2192,7 +2808,17 @@ const App = () => {
     <Matchmaker 
       db={db} 
       userId={userId} 
-      userName={profileData.name} 
+      userName={profileData.name}
+      userType={userType}
+    />
+  );
+
+  const renderChatsTab = () => (
+    <ChatInterface 
+      db={db} 
+      userId={userId} 
+      userName={profileData.name}
+      userType={userType}
     />
   );
 
@@ -2228,6 +2854,14 @@ const App = () => {
         </h1>
         {userId && (
           <div className="text-sm text-gray-600 flex items-center space-x-4">
+            {userType === 'professor' && unreadCount > 0 && (
+              <div className="relative">
+                <BellRing className="w-6 h-6 text-red-500 animate-pulse" />
+                <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                  {unreadCount}
+                </span>
+              </div>
+            )}
             <span className="truncate hidden md:inline">
               **User ID:** <code className="bg-gray-100 p-1 rounded text-xs text-indigo-600 font-mono">{userId}</code>
             </span>
@@ -2269,6 +2903,12 @@ const App = () => {
           <Globe className="w-5 h-5 mr-2" /> Global Feed
         </button>
         <button
+          onClick={() => setActiveTab('chats')}
+          className={`px-4 py-2 flex items-center font-medium ${activeTab === 'chats' ? 'border-b-4 border-indigo-600 text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}
+        >
+          <MessageSquare className="w-5 h-5 mr-2" /> Chats
+        </button>
+        <button
           onClick={() => setActiveTab('profile')}
           className={`px-4 py-2 flex items-center font-medium ${activeTab === 'profile' ? 'border-b-4 border-indigo-600 text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}
         >
@@ -2290,6 +2930,7 @@ const App = () => {
         {activeTab === 'profile' && renderProfileTab()}
         {activeTab === 'feed' && renderFeedTab()}
         {activeTab === 'matchmaker' && renderMatchmakerTab()}
+        {activeTab === 'chats' && renderChatsTab()}
         {activeTab === 'admin' && <AdminDashboard db={db} userId={userId} />}
       </main>
 

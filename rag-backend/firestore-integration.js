@@ -22,9 +22,11 @@ async function getProfessorsFromFirestore() {
   try {
     console.log('🔍 Fetching professors from Firestore...');
     
-    // Try different collection paths
+    // Try different collection paths - prioritize the users collection where professors are stored
     const possiblePaths = [
-      'artifacts/academic-matchmaker-prod/public/data/professors',
+      'artifacts/academic-match-production/public/data/users', // Main users collection
+      'artifacts/academic-matchmaker-prod/public/data/users', // Alternative path
+      'artifacts/academic-matchmaker-prod/public/data/professors', // Separate professors collection
       'professors',
       'artifacts/academic-matchmaker-prod/professors'
     ];
@@ -33,22 +35,37 @@ async function getProfessorsFromFirestore() {
     
     for (const path of possiblePaths) {
       try {
-        const professorsCollection = collection(db, path);
-        const snapshot = await getDocs(professorsCollection);
+        const collectionRef = collection(db, path);
+        const snapshot = await getDocs(collectionRef);
         
         professors = [];
         snapshot.forEach(doc => {
           const data = doc.data();
-          professors.push({
-            id: doc.id,
-            ...data,
-            // Ensure keywords is an array
-            keywords: Array.isArray(data.keywords) ? data.keywords : []
-          });
+          
+          // If this is the users collection, filter for professors only
+          if (path.includes('users')) {
+            if (data.userType === 'professor') {
+              professors.push({
+                id: doc.id,
+                ...data,
+                // Ensure keywords is an array
+                keywords: Array.isArray(data.keywords) ? data.keywords : []
+              });
+            }
+          } else {
+            // If this is a dedicated professors collection, include all
+            professors.push({
+              id: doc.id,
+              ...data,
+              // Ensure keywords is an array
+              keywords: Array.isArray(data.keywords) ? data.keywords : []
+            });
+          }
         });
         
         if (professors.length > 0) {
           console.log(`📊 Loaded ${professors.length} professors from Firestore path: ${path}`);
+          console.log('🔍 Professor data:', professors.map(p => ({ name: p.name, userType: p.userType, researchArea: p.researchArea })));
           return professors;
         }
       } catch (pathError) {
@@ -59,70 +76,9 @@ async function getProfessorsFromFirestore() {
     
     console.log('⚠️ No professors found in any Firestore path');
     
-    // Fallback: Return sample professor data
-    console.log('📚 Using fallback sample professor data');
-    return [
-      {
-        id: 'prof_1',
-        name: 'Dr. Sarah Chen',
-        title: 'Professor of Computer Science',
-        university: 'Stanford University',
-        department: 'Computer Science',
-        researchArea: 'Machine Learning and AI',
-        bio: 'Leading researcher in machine learning with focus on deep learning applications',
-        keywords: ['machine learning', 'deep learning', 'artificial intelligence', 'neural networks'],
-        email: 'sarah.chen@stanford.edu',
-        website: 'https://stanford.edu/~sarahchen'
-      },
-      {
-        id: 'prof_2',
-        name: 'Dr. Michael Rodriguez',
-        title: 'Professor of Biology',
-        university: 'MIT',
-        department: 'Biology',
-        researchArea: 'Cancer Research and Genomics',
-        bio: 'Expert in cancer genomics and personalized medicine',
-        keywords: ['cancer', 'genomics', 'personalized medicine', 'oncology', 'genetics'],
-        email: 'mrodriguez@mit.edu',
-        website: 'https://biology.mit.edu/rodriguez'
-      },
-      {
-        id: 'prof_3',
-        name: 'Dr. Emily Watson',
-        title: 'Professor of Physics',
-        university: 'Caltech',
-        department: 'Physics',
-        researchArea: 'Quantum Computing and Quantum Mechanics',
-        bio: 'Pioneer in quantum computing and quantum information theory',
-        keywords: ['quantum computing', 'quantum mechanics', 'quantum information', 'physics'],
-        email: 'ewatson@caltech.edu',
-        website: 'https://physics.caltech.edu/watson'
-      },
-      {
-        id: 'prof_4',
-        name: 'Dr. James Kim',
-        title: 'Professor of Chemistry',
-        university: 'Harvard University',
-        department: 'Chemistry',
-        researchArea: 'Drug Discovery and Medicinal Chemistry',
-        bio: 'Leading researcher in drug discovery and pharmaceutical chemistry',
-        keywords: ['drug discovery', 'medicinal chemistry', 'pharmaceuticals', 'chemistry'],
-        email: 'jkim@harvard.edu',
-        website: 'https://chemistry.harvard.edu/kim'
-      },
-      {
-        id: 'prof_5',
-        name: 'Dr. Lisa Thompson',
-        title: 'Professor of Data Science',
-        university: 'UC Berkeley',
-        department: 'Statistics',
-        researchArea: 'Data Science and Statistical Learning',
-        bio: 'Expert in statistical learning and big data analytics',
-        keywords: ['data science', 'statistics', 'big data', 'analytics', 'machine learning'],
-        email: 'lthompson@berkeley.edu',
-        website: 'https://statistics.berkeley.edu/thompson'
-      }
-    ];
+    // No fallback data - return empty array to force using real data only
+    console.log('📚 No fallback data - using real Firestore data only');
+    return [];
     
   } catch (error) {
     console.error('❌ Error fetching professors from Firestore:', error);
@@ -157,7 +113,64 @@ async function searchProfessorsInFirestore(query) {
   }
 }
 
+// Function to get students from Firestore
+async function getStudentsFromFirestore() {
+  try {
+    console.log('🔍 Fetching students from Firestore...');
+    
+    // Try different collection paths - prioritize the users collection where students are stored
+    const possiblePaths = [
+      'artifacts/academic-match-production/public/data/users', // Main users collection
+      'artifacts/academic-matchmaker-prod/public/data/users', // Alternative path
+    ];
+    
+    let students = [];
+    
+    for (const path of possiblePaths) {
+      try {
+        const collectionRef = collection(db, path);
+        const snapshot = await getDocs(collectionRef);
+        
+        students = [];
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          
+          // Filter for students only
+          if (data.userType === 'student') {
+            students.push({
+              id: doc.id,
+              ...data,
+              // Ensure keywords is an array
+              keywords: Array.isArray(data.keywords) ? data.keywords : []
+            });
+          }
+        });
+        
+        if (students.length > 0) {
+          console.log(`📊 Loaded ${students.length} students from Firestore path: ${path}`);
+          console.log('🔍 Student data:', students.map(s => ({ name: s.name, userType: s.userType, researchArea: s.researchArea })));
+          return students;
+        }
+      } catch (pathError) {
+        console.log(`⚠️ Path ${path} not accessible:`, pathError.message);
+        continue;
+      }
+    }
+    
+    console.log('⚠️ No students found in any Firestore path');
+    
+    // No fallback data - return empty array to force using real data only
+    console.log('📚 No fallback data - using real Firestore data only');
+    return [];
+    
+  } catch (error) {
+    console.error('❌ Error fetching students from Firestore:', error);
+    return [];
+  }
+}
+
 export {
   getProfessorsFromFirestore,
-  searchProfessorsInFirestore
+  searchProfessorsInFirestore,
+  getStudentsFromFirestore
 };
