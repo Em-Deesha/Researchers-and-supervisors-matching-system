@@ -617,10 +617,11 @@ const Matchmaker = ({ db, userId, userName }) => {
     try {
       console.log(`🔍 Sending production RAG query: "${term}"`);
       
-      // Get authentication token
-      const token = localStorage.getItem('authToken');
-      if (!token) {
-        // Auto-login for demo
+      // Get or refresh authentication token
+      let authToken = localStorage.getItem('authToken');
+      
+      // Always get a fresh token to avoid expiration issues
+      try {
         const loginResponse = await fetch('http://localhost:3003/auth/login', {
           method: 'POST',
           headers: {
@@ -634,29 +635,14 @@ const Matchmaker = ({ db, userId, userName }) => {
         
         if (loginResponse.ok) {
           const loginData = await loginResponse.json();
-          localStorage.setItem('authToken', loginData.token);
-        }
-      }
-      
-      // Call production RAG backend API with authentication
-      let authToken = localStorage.getItem('authToken');
-      if (!authToken) {
-        // Generate a token for the current Firebase user
-        try {
-          const tokenResponse = await fetch('http://localhost:3003/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-              email: 'firebase-user@academic-matchmaker.com', 
-              password: 'firebase-auth-bridge' 
-            })
-          });
-          const tokenData = await tokenResponse.json();
-          authToken = tokenData.token;
+          authToken = loginData.token;
           localStorage.setItem('authToken', authToken);
-        } catch (error) {
-          throw new Error('Unable to authenticate with backend. Please try again.');
+        } else {
+          throw new Error('Failed to authenticate with backend');
         }
+      } catch (error) {
+        console.error('Authentication error:', error);
+        throw new Error('Unable to authenticate with backend. Please try again.');
       }
       
       const response = await fetch('http://localhost:3003/smart-match', {
@@ -670,9 +656,12 @@ const Matchmaker = ({ db, userId, userName }) => {
 
       if (!response.ok) {
         if (response.status === 401) {
-          // Token expired, try to re-authenticate
+          // Token expired, clear and retry
           localStorage.removeItem('authToken');
           throw new Error('Authentication expired. Please try again.');
+        } else if (response.status === 403) {
+          // CORS or permission issue
+          throw new Error('Access forbidden. Please refresh the page and try again.');
         }
         throw new Error(`Production RAG API error: ${response.status} ${response.statusText}`);
       }

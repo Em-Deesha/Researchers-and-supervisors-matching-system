@@ -66,21 +66,28 @@ const corsOptions = {
       return callback(null, true);
     }
     
+    // Always allow localhost for development
+    if (origin.includes('localhost')) {
+      return callback(null, true);
+    }
+    
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 };
 
 // Custom CORS middleware for explicit headers
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (origin && (origin.includes('localhost:3004') || origin.includes('localhost:3001'))) {
+  if (origin && origin.includes('localhost')) {
     res.header('Access-Control-Allow-Origin', origin);
   }
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With');
   if (req.method === 'OPTIONS') {
     res.sendStatus(200);
     return;
@@ -257,8 +264,47 @@ Focus on research area alignment, university reputation, and potential collabora
       cleanText = cleanText.replace(/```\n?/g, '');
     }
     
-    const matches = JSON.parse(cleanText);
-    return matches;
+    // Try to extract JSON from the response
+    let jsonText = cleanText.trim();
+    
+    // Look for JSON array in the response
+    const jsonMatch = jsonText.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      jsonText = jsonMatch[0];
+    }
+    
+    try {
+      const matches = JSON.parse(jsonText);
+      return matches;
+    } catch (parseError) {
+      console.error('JSON parse error, using fallback matching:', parseError);
+      // Fallback to simple keyword matching
+      const queryLower = query.toLowerCase();
+      const fallbackMatches = professors
+        .filter(prof => {
+          const searchText = [
+            prof.name,
+            prof.researchArea,
+            prof.university,
+            prof.title,
+            prof.bio,
+            ...(prof.keywords || [])
+          ].join(' ').toLowerCase();
+          return searchText.includes(queryLower);
+        })
+        .slice(0, 3)
+        .map(prof => ({
+          id: prof.id,
+          name: prof.name,
+          title: prof.title,
+          university: prof.university,
+          researchArea: prof.researchArea,
+          justification: `Matches your interest in ${query} based on research area and expertise.`,
+          similarityScore: 0.8
+        }));
+      
+      return fallbackMatches;
+    }
     
   } catch (error) {
     console.error('Error in Gemini response generation:', error);
